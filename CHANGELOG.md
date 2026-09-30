@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1] - 2026-09-30
+
+### Fixed
+
+- Output schemas declared as required some fields that are omitted when empty or
+  false (`edited`, `deleted`, `has_media`, `reactions` on messages, `archived` and
+  `pinned` on chats, `groups` on contacts, `truncated` on `list_recent`). Strict MCP
+  hosts rejected the output as not matching its schema. These fields are now
+  optional in the schema; responses are unchanged.
+
 ## [0.1.0] - 2026-09-30
 
 First public release.

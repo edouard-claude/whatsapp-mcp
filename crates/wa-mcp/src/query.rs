@@ -230,9 +230,9 @@ pub struct ChatSummary {
     pub last_message_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archived: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
 }
 
@@ -484,15 +484,15 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<Quote>,
     /// Réactions : « 👍 Alice ».
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub edited: bool,
     /// Supprimé pour tous : le contenu n'est plus disponible.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
     /// Le message porte un média : `get_media` avec `chat` et `id` le télécharge.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_media: bool,
 }
 
@@ -921,7 +921,7 @@ pub struct Contact {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_at: Option<String>,
     /// Groupes en commun (uniquement dans `get_contact`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
 }
 
@@ -1083,6 +1083,39 @@ mod tests {
             Some("\"l\" \"école\" \"x\" \"OR\"")
         );
         assert_eq!(fts_query("  ' \" "), None);
+    }
+
+    /// Un champ omis de la réponse quand il est vide ne doit pas être déclaré
+    /// obligatoire dans le schéma de sortie (bug remonté par un hôte en v0.1.0).
+    #[test]
+    fn omitted_fields_are_optional_in_schema() {
+        let required = |schema: schemars::Schema| -> Vec<String> {
+            serde_json::to_value(schema).expect("schéma")["required"]
+                .as_array()
+                .map(|r| {
+                    r.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let msg = required(schemars::schema_for!(Message));
+        for f in [
+            "edited",
+            "deleted",
+            "has_media",
+            "reactions",
+            "text",
+            "reply_to",
+        ] {
+            assert!(
+                !msg.contains(&f.to_owned()),
+                "Message.{f} déclaré obligatoire"
+            );
+        }
+        let chat = required(schemars::schema_for!(ChatSummary));
+        assert!(!chat.contains(&"archived".to_owned()) && !chat.contains(&"pinned".to_owned()));
+        assert!(!required(schemars::schema_for!(Contact)).contains(&"groups".to_owned()));
     }
 
     #[test]

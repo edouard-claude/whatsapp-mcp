@@ -216,7 +216,7 @@ struct RecentOut {
     /// Ordre chronologique, toutes discussions confondues.
     messages: Vec<Message>,
     /// Vrai si la limite a coupé la liste : relancer avec un `since` plus récent.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
 }
 
