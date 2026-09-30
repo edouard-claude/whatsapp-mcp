@@ -1,0 +1,522 @@
+// Contrat entre wa-mcp (Rust) et wa-bridge (Go, whatsmeow).
+//
+// Transport : stdin/stdout du process wa-bridge, chaque trame est un entier
+// big-endian sur 4 octets (longueur) suivi du message protobuf.
+// Rust écrit des `Command` sur stdin, Go écrit des `Event` sur stdout.
+// stderr est réservé aux logs du bridge.
+//
+// Tous les JID transmis sont sans partie appareil (`123@s.whatsapp.net`, jamais
+// `123:4@s.whatsapp.net`).
+syntax = "proto3";
+
+package wabridge.v1;
+
+option go_package = "github.com/edouard-claude/whatsapp-mcp/bridge/pb";
+
+// ---------------------------------------------------------------- Rust -> Go
+
+message Command {
+  // Identifiant de corrélation : la réponse arrive dans un `Reply` qui porte le
+  // même `id`. Zéro pour les commandes sans réponse (`Ack`).
+  uint64 id = 1;
+  oneof kind {
+    StartAccount start_account = 10;
+    SendMessage send_message = 11;
+    Logout logout = 12;
+    Ack ack = 13;
+    GetContacts get_contacts = 14;
+    GetGroups get_groups = 15;
+    DownloadMedia download_media = 16;
+    UploadMedia upload_media = 17;
+    MarkRead mark_read = 18;
+    ChatPresence chat_presence = 19;
+    CheckPhones check_phones = 20;
+    GroupCommand group = 21;
+    ChatSettings chat_settings = 22;
+    AccountCommand account_command = 23;
+    MediaRetry media_retry = 24;
+    RequestHistory request_history = 25;
+  }
+}
+
+// Ouvre (et crée au besoin) la session d'un compte, puis se connecte et reste
+// connecté : reconnexion automatique tant que la session est valide.
+// Si le compte n'est pas appairé : événements `Qr`, ou un `PairCode` si
+// `pair_phone` est renseigné.
+message StartAccount {
+  string account = 1;
+  // Numéro international, chiffres seuls, sans `+` ni `0` initial.
+  string pair_phone = 2;
+}
+
+// Envoie un message construit par wa-mcp. whatsmeow déduit seul le type
+// d'envoi (édition, suppression pour tous) du contenu. Répond `SendResult`.
+message SendMessage {
+  string account = 1;
+  // JID complet (`...@s.whatsapp.net`, `...@g.us`) ou numéro (chiffres seuls).
+  string to = 2;
+  // `waE2E.Message` sérialisé.
+  bytes message = 3;
+  // Identifiant imposé, sinon généré par whatsmeow.
+  string id = 4;
+}
+
+message Logout {
+  string account = 1;
+}
+
+// Acquittement d'un `IncomingMessage` ou d'un `HistoryBatch`, envoyé une fois
+// les données persistées. `ok = false` (ou pas d'ack avant le délai) : WhatsApp
+// redélivrera.
+message Ack {
+  uint64 seq = 1;
+  bool ok = 2;
+}
+
+// Répond `Contacts` : tout le carnet connu de whatsmeow, avec les
+// correspondances LID <-> numéro.
+message GetContacts {
+  string account = 1;
+}
+
+// Répond `Groups`. Sans `jids` : tous les groupes rejoints.
+message GetGroups {
+  string account = 1;
+  repeated string jids = 2;
+}
+
+// Télécharge et déchiffre le média d'un message, et l'écrit dans `path`.
+// Répond `MediaResult`.
+message DownloadMedia {
+  string account = 1;
+  // `waE2E.Message` sérialisé, enveloppes retirées : il porte directement
+  // l'image, la vidéo, l'audio, le document ou le sticker.
+  bytes message = 2;
+  // Chemin absolu de destination, obligatoirement sous le répertoire de données.
+  string path = 3;
+}
+
+// Chiffre et téléverse un fichier sur les serveurs de médias de WhatsApp.
+// Répond `UploadResult`, de quoi construire l'image, la vidéo, l'audio ou le document.
+message UploadMedia {
+  string account = 1;
+  string path = 2;
+  // `image`, `video`, `audio` ou `document`.
+  string media_type = 3;
+}
+
+// Accusé de lecture des messages `ids` de `chat`, écrits par `sender` (groupes).
+message MarkRead {
+  string account = 1;
+  string chat = 2;
+  string sender = 3;
+  repeated string ids = 4;
+}
+
+message ChatPresence {
+  string account = 1;
+  string chat = 2;
+  // `composing`, `recording` ou `paused`.
+  string state = 3;
+}
+
+// Répond `PhoneChecks`.
+message CheckPhones {
+  string account = 1;
+  // Numéros internationaux, chiffres seuls.
+  repeated string phones = 2;
+}
+
+// Une action sur un groupe ou une communauté. `jid` : le groupe visé (vide pour
+// create, join_link, preview_link ; la communauté pour link_child/unlink_child).
+message GroupCommand {
+  string account = 1;
+  string jid = 2;
+  oneof op {
+    GroupCreate create = 10;              // répond Groups
+    string set_name = 11;
+    string set_topic = 12;
+    bool set_announce = 13;
+    bool set_locked = 14;
+    bool set_join_approval = 15;
+    uint32 set_ephemeral_seconds = 16;
+    string set_photo_path = 17;           // JPEG
+    ParticipantsChange participants = 18; // répond ParticipantResults
+    bool invite_link = 19;                // valeur : réinitialiser le lien ; répond Text
+    string join_link = 20;                // répond Text (JID du groupe)
+    string preview_link = 21;             // répond Groups
+    bool list_requests = 22;              // répond ParticipantResults
+    RequestsChange requests = 23;         // répond ParticipantResults
+    bool leave = 24;
+    string link_child = 25;
+    string unlink_child = 26;
+  }
+}
+
+message GroupCreate {
+  string name = 1;
+  repeated string participants = 2;
+  bool community = 3;
+  // Communauté à laquelle rattacher le nouveau groupe.
+  string parent = 4;
+}
+
+message ParticipantsChange {
+  // `add`, `remove`, `promote`, `demote`.
+  string action = 1;
+  repeated string participants = 2;
+}
+
+message RequestsChange {
+  bool approve = 1;
+  repeated string participants = 2;
+}
+
+// Réglages d'une discussion, synchronisés avec les autres appareils (app state).
+message ChatSettings {
+  string account = 1;
+  string chat = 2;
+  // Dernier message de la discussion : WhatsApp en a besoin pour archiver et
+  // marquer lu / non lu.
+  string last_id = 3;
+  bool last_from_me = 4;
+  string last_sender = 5;
+  int64 last_ts_ms = 6;
+  oneof op {
+    bool archive = 10;
+    bool pin = 11;
+    // 0 : réactiver les notifications ; -1 : muet pour toujours ; sinon fin en ms.
+    int64 mute_until_ms = 12;
+    // false : marquer comme non lu.
+    bool mark_read = 13;
+  }
+}
+
+message AccountCommand {
+  string account = 1;
+  oneof op {
+    StringList user_info = 10;     // répond Users
+    string picture = 11;           // JID ; répond Text (URL, vide si aucune photo)
+    string business = 12;          // JID ; répond KeyValues
+    string set_about = 13;
+    bool get_blocklist = 14;       // répond StringList
+    string block = 15;             // répond StringList
+    string unblock = 16;           // répond StringList
+    bool get_privacy = 17;         // répond KeyValues
+    KeyValue set_privacy = 18;     // répond KeyValues
+  }
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+// Demande au téléphone de renvoyer un média expiré des serveurs de WhatsApp.
+// Le téléphone doit être en ligne. Répond `Text` : le nouveau chemin du média.
+message MediaRetry {
+  string account = 1;
+  string chat = 2;
+  string sender = 3;
+  bool from_me = 4;
+  string id = 5;
+  bytes media_key = 6;
+}
+
+// Demande au téléphone des messages plus anciens que `oldest_id` dans `chat`.
+// Ils arrivent ensuite en `HistoryBatch` de type ON_DEMAND.
+message RequestHistory {
+  string account = 1;
+  string chat = 2;
+  string oldest_id = 3;
+  bool oldest_from_me = 4;
+  string oldest_sender = 5;
+  int64 oldest_ts_ms = 6;
+  uint32 count = 7;
+}
+
+// ---------------------------------------------------------------- Go -> Rust
+
+message Event {
+  oneof kind {
+    Reply reply = 1;
+    Qr qr = 2;
+    PairCode pair_code = 3;
+    PairSuccess pair_success = 4;
+    ConnectionState connection = 5;
+    IncomingMessage message = 8;
+    HistoryBatch history = 9;
+    Receipt receipt = 10;
+    GroupChanged group_changed = 11;
+    ChatSettingsChanged chat_settings = 12;
+  }
+}
+
+// Réglage d'une discussion modifié depuis un autre appareil.
+message ChatSettingsChanged {
+  string account = 1;
+  string chat = 2;
+  optional bool archived = 3;
+  optional bool pinned = 4;
+  optional int64 mute_end_ms = 5;
+  optional bool read = 6;
+}
+
+message Reply {
+  uint64 id = 1;
+  // Vide en cas de succès.
+  string error = 2;
+  oneof payload {
+    SendResult send = 10;
+    Contacts contacts = 11;
+    Groups groups = 12;
+    MediaResult media = 13;
+    UploadResult upload = 14;
+    PhoneChecks phones = 15;
+    string text = 16;
+    ParticipantResults participants = 17;
+    Users users = 18;
+    StringList strings = 19;
+    KeyValues key_values = 20;
+    PairCode pair_code = 21;
+  }
+}
+
+message ParticipantResults {
+  repeated ParticipantResult results = 1;
+}
+
+message ParticipantResult {
+  string jid = 1;
+  // Code d'erreur WhatsApp, 0 si l'action a réussi (403 : refusé par sa
+  // confidentialité, 409 : déjà membre...).
+  int32 error = 2;
+  int64 requested_at_ms = 3;
+}
+
+message Users {
+  repeated User users = 1;
+}
+
+message User {
+  string jid = 1;
+  string about = 2;
+  string picture_id = 3;
+  uint32 devices = 4;
+  string lid = 5;
+  string verified_name = 6;
+}
+
+message KeyValues {
+  map<string, string> values = 1;
+}
+
+message UploadResult {
+  string url = 1;
+  string direct_path = 2;
+  bytes media_key = 3;
+  bytes file_enc_sha256 = 4;
+  bytes file_sha256 = 5;
+  uint64 file_length = 6;
+}
+
+message PhoneChecks {
+  repeated PhoneCheck results = 1;
+}
+
+message PhoneCheck {
+  string phone = 1;
+  bool on_whatsapp = 2;
+  string jid = 3;
+}
+
+message MediaResult {
+  string path = 1;
+  uint64 size = 2;
+}
+
+message SendResult {
+  string message_id = 1;
+  int64 timestamp_ms = 2;
+}
+
+message Qr {
+  string account = 1;
+  string code = 2;
+}
+
+message PairCode {
+  string account = 1;
+  // Format `XXXX-XXXX`, valable environ 160 secondes.
+  string code = 2;
+}
+
+message PairSuccess {
+  string account = 1;
+  string jid = 2;
+}
+
+message ConnectionState {
+  enum State {
+    UNKNOWN = 0;
+    CONNECTED = 1;
+    // Coupure passagère : whatsmeow se reconnecte seul.
+    DISCONNECTED = 2;
+    // Session révoquée (appareil délié, téléphone inactif trop longtemps...) :
+    // il faut réappairer.
+    LOGGED_OUT = 3;
+    // Une autre instance utilise la même session : pas de reconnexion.
+    STREAM_REPLACED = 4;
+    TEMPORARY_BAN = 5;
+    KEEPALIVE_TIMEOUT = 6;
+    KEEPALIVE_RESTORED = 7;
+    // Échec de connexion, nouvelle tentative programmée.
+    CONNECT_FAILED = 8;
+    CLIENT_OUTDATED = 9;
+  }
+  string account = 1;
+  State state = 2;
+  // Sur CONNECTED : identité du compte.
+  string jid = 3;
+  string lid = 4;
+  string detail = 5;
+  // Sur TEMPORARY_BAN : fin du bannissement.
+  int64 until_ms = 6;
+}
+
+message IncomingMessage {
+  string account = 1;
+  // Numéro de séquence à renvoyer dans `Ack`.
+  uint64 seq = 2;
+  MessageInfo info = 3;
+  // `waE2E.Message` sérialisé, tel que reçu (enveloppes comprises).
+  bytes raw = 4;
+}
+
+message MessageInfo {
+  string id = 1;
+  string chat = 2;
+  string sender = 3;
+  // Autre forme du JID de l'expéditeur (LID si `sender` est un numéro, et inversement).
+  string sender_alt = 4;
+  bool from_me = 5;
+  bool is_group = 6;
+  int64 timestamp_ms = 7;
+  string push_name = 8;
+  // Type d'enveloppe côté WhatsApp (`text`, `media`, `reaction`, `poll`...).
+  string type = 9;
+  string media_type = 10;
+  bool is_edit = 11;
+  // Autre forme du JID d'une discussion individuelle.
+  string chat_alt = 12;
+}
+
+// Un morceau d'historique, déjà converti par whatsmeow au format du direct.
+// Un historique volumineux arrive en plusieurs lots, chacun acquitté.
+message HistoryBatch {
+  string account = 1;
+  uint64 seq = 2;
+  // `INITIAL_BOOTSTRAP`, `RECENT`, `FULL`, `PUSH_NAME`, `ON_DEMAND`...
+  string sync_type = 3;
+  uint32 progress = 4;
+  repeated ChatMeta chats = 5;
+  repeated HistoryMessage messages = 6;
+  repeated Reaction reactions = 7;
+  repeated LidMapping mappings = 8;
+}
+
+message HistoryMessage {
+  MessageInfo info = 1;
+  bytes raw = 2;
+}
+
+message ChatMeta {
+  string jid = 1;
+  string name = 2;
+  uint32 unread_count = 3;
+  bool archived = 4;
+  bool pinned = 5;
+  int64 mute_end_ms = 6;
+  int64 last_message_ms = 7;
+  string pn = 8;
+  string lid = 9;
+}
+
+message Reaction {
+  string chat = 1;
+  string target_id = 2;
+  string sender = 3;
+  // Vide : réaction retirée.
+  string emoji = 4;
+  int64 timestamp_ms = 5;
+}
+
+message LidMapping {
+  string lid = 1;
+  string pn = 2;
+}
+
+message Receipt {
+  string account = 1;
+  string chat = 2;
+  // Qui a reçu ou lu (pour nos messages), ou nous (pour les leurs).
+  string sender = 3;
+  bool from_me = 4;
+  repeated string message_ids = 5;
+  // `delivered`, `read`, `played`, `read-self`, `played-self`, `sender`...
+  string type = 6;
+  int64 timestamp_ms = 7;
+}
+
+// Métadonnées d'un groupe modifiées : rafraîchir avec `GetGroups`.
+message GroupChanged {
+  string account = 1;
+  string jid = 2;
+}
+
+message Contacts {
+  repeated Contact contacts = 1;
+  repeated LidMapping mappings = 2;
+}
+
+message Contact {
+  string jid = 1;
+  string first_name = 2;
+  string full_name = 3;
+  string push_name = 4;
+  string business_name = 5;
+  // Pour un membre de groupe connu seulement par son LID : numéro masqué (`+33∙∙∙∙∙∙∙∙12`).
+  string redacted_phone = 6;
+}
+
+message Groups {
+  repeated Group groups = 1;
+}
+
+message Group {
+  string jid = 1;
+  string name = 2;
+  string topic = 3;
+  string owner = 4;
+  int64 created_ms = 5;
+  bool announce = 6;
+  bool locked = 7;
+  bool is_community = 8;
+  // Communauté parente d'un sous-groupe.
+  string parent = 9;
+  uint32 ephemeral_seconds = 10;
+  repeated Participant participants = 11;
+}
+
+message Participant {
+  string jid = 1;
+  string pn = 2;
+  string lid = 3;
+  // `member`, `admin`, `superadmin`.
+  string role = 4;
+  string display_name = 5;
+}

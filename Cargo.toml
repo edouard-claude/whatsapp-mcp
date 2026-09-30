@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/wa-proto", "crates/wa-mcp"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+authors = ["Edouard Claude"]
+repository = "https://github.com/edouard-claude/whatsapp-mcp"
+homepage = "https://github.com/edouard-claude/whatsapp-mcp"
+readme = "README.md"
+keywords = ["mcp", "whatsapp", "whatsmeow", "llm", "agent"]
+categories = ["command-line-utilities"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+dbg_macro = "deny"

@@ -1,0 +1,18 @@
+[package]
+name = "wa-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Generated protobuf types: bridge contract and WhatsApp messages (whatsmeow)"
+
+[lints]
+workspace = true
+
+[dependencies]
+prost = "0.14.4"
+
+[build-dependencies]
+prost-build = "0.14.4"
