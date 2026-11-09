@@ -1,7 +1,7 @@
 # Image du serveur MCP : `docker run -i --rm -v wa-data:/data ghcr.io/…` sur stdio.
 # Construit depuis les sources : wa-mcp (Rust) et wa-bridge (Go), côte à côte.
 
-FROM golang:1.26-bookworm AS bridge
+FROM golang:1.27-bookworm AS bridge
 WORKDIR /src/bridge
 COPY bridge/go.mod bridge/go.sum ./
 RUN go mod download
