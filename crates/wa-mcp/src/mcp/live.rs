@@ -33,7 +33,20 @@ pub struct LegacySubs {
     peer: Option<Peer<RoleServer>>,
     /// URI canonique -> URI tel que l'hôte l'a demandé.
     uris: HashMap<String, String>,
-    notifier_started: bool,
+    /// Tâche de notification, démarrée au premier abonnement. Elle ne dépend
+    /// que de cet état et du flux de nouvelles, pas de la session : c'est le
+    /// `WaServer` qui l'arrête en disparaissant (voir `stop_notifier`), sans
+    /// quoi elle survivrait à l'hôte et attendrait la prochaine nouvelle.
+    notifier: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl LegacySubs {
+    pub fn stop_notifier(&mut self) {
+        if let Some(task) = self.notifier.take() {
+            task.abort();
+            tracing::debug!("session fermée : notifications arrêtées");
+        }
+    }
 }
 
 pub type SharedSubs = Arc<parking_lot::Mutex<LegacySubs>>;
@@ -78,14 +91,14 @@ impl WaServer {
 
     pub(super) async fn legacy_subscribe(&self, uri: String, peer: Peer<RoleServer>) {
         let canonical = self.canonical_uri(&uri).await;
-        let start = {
-            let mut s = self.subs.lock();
-            s.uris.insert(canonical, uri);
-            s.peer = Some(peer);
-            !std::mem::replace(&mut s.notifier_started, true)
-        };
-        if start {
-            tokio::spawn(legacy_notifier(self.subs.clone(), self.updates.subscribe()));
+        let mut s = self.subs.lock();
+        s.uris.insert(canonical, uri);
+        s.peer = Some(peer);
+        if s.notifier.is_none() {
+            s.notifier = Some(tokio::spawn(legacy_notifier(
+                self.subs.clone(),
+                self.updates.subscribe(),
+            )));
         }
     }
 

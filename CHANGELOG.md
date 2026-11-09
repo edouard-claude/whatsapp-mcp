@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `wa-mcp service`: one process holds the WhatsApp session (bridge, locks, database,
+  send limit) and serves it to several MCP hosts at once over Streamable HTTP, one
+  MCP session per host. It listens on `127.0.0.1` only (`--port`, default `47311`),
+  requires a bearer token (`service/token`, `0600`; `service/token-read-only` only
+  exposes read tools), accepts loopback `Host` headers only and rejects any request
+  carrying an `Origin`.
+- `wa-mcp service install|uninstall|status`: installs it as a supervised user service
+  (launchd on macOS, `systemd --user` on Linux).
+- `wa-mcp serve` relays stdio to the service when it answers, and otherwise runs the
+  session in-process as before: existing installations are unchanged.
+- `wa-mcp doctor` shows whether the service runs, on which port, and the URL and header
+  to paste into an HTTP host.
+
+### Fixed
+
+- The `resources/subscribe` notification task outlived its MCP session and waited
+  for the next chat update; it now stops with the session.
+- The send limit (20/min per account) is shared by every MCP session of an instance,
+  and an account paired from one session is seen by all of them.
+
 ## [0.1.3] - 2026-11-09
 
 ### Fixed
