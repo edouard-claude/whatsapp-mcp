@@ -20,7 +20,7 @@ use wa_proto::wabridge::v1 as pb;
 use crate::domain::AccountAlias;
 use crate::parse::{self, Kind, Parsed};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE meta (
@@ -151,6 +151,11 @@ CREATE TABLE media (
 CREATE VIEW contact_names AS
 SELECT jid, COALESCE(full_name, first_name, business_name, push_name) AS name
 FROM contacts;
+";
+
+/// v3 : durée des messages éphémères d'une discussion, à reprendre dans chaque envoi.
+const SCHEMA_V3: &str = "
+ALTER TABLE chats ADD COLUMN ephemeral_seconds INTEGER NOT NULL DEFAULT 0;
 ";
 
 /// Types d'accusés conservés ; les autres (`retry`, `sender`, `server-error`...)
@@ -312,6 +317,38 @@ pub fn migrate(c: &mut Connection) -> Result<(), StoreError> {
         tx.execute_batch(SCHEMA_V2)?;
         tx.execute_batch("PRAGMA user_version = 2;")?;
         tx.commit()?;
+    }
+    if version < 3 {
+        let tx = c.transaction()?;
+        tx.execute_batch(SCHEMA_V3)?;
+        backfill_ephemeral(&tx)?;
+        tx.execute_batch("PRAGMA user_version = 3;")?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+/// Réglage éphémère des discussions existantes, d'après leur dernier message :
+/// meilleure estimation en attendant le prochain message en direct.
+fn backfill_ephemeral(tx: &Transaction<'_>) -> rusqlite::Result<()> {
+    let rows: Vec<(String, Vec<u8>)> = {
+        let mut st = tx.prepare(
+            "SELECT m.chat, m.raw FROM chats c
+             JOIN messages m ON m.rowid = (
+                 SELECT rowid FROM messages
+                 WHERE chat = c.jid AND length(raw) > 0
+                 ORDER BY timestamp_ms DESC LIMIT 1)",
+        )?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (chat, raw) in rows {
+        if let Some(secs) = parse::decode(&raw).ok().and_then(|d| parse::expiration(&d)) {
+            tx.execute(
+                "UPDATE chats SET ephemeral_seconds = ?2 WHERE jid = ?1",
+                params![chat, secs],
+            )?;
+        }
     }
     Ok(())
 }
@@ -544,6 +581,20 @@ fn put_message(tx: &Transaction<'_>, m: &MessageIn) -> rusqlite::Result<()> {
         )?;
     }
 
+    // Le direct suit le réglage éphémère au fil de l'eau ; l'historique le donne
+    // par discussion (`ChatMeta`), ses vieux messages ne disent rien du réglage actuel.
+    if matches!(m.source, Source::Live)
+        && let Some(secs) = parse::decode(&m.raw)
+            .ok()
+            .and_then(|d| parse::expiration(&d))
+    {
+        tx.execute(
+            "INSERT INTO chats (jid, kind, ephemeral_seconds) VALUES (?1, ?2, ?3)
+             ON CONFLICT (jid) DO UPDATE SET ephemeral_seconds = excluded.ephemeral_seconds",
+            params![chat, chat_kind(&chat), secs],
+        )?;
+    }
+
     match &m.parsed {
         Parsed::Plumbing => {}
         Parsed::Content {
@@ -634,15 +685,16 @@ fn put_reaction(
 fn put_chat_meta(tx: &Transaction<'_>, ch: &pb::ChatMeta) -> rusqlite::Result<()> {
     let jid = canon(tx, &ch.jid)?;
     tx.execute(
-        "INSERT INTO chats (jid, kind, name, unread_count, archived, pinned, mute_end_ms, last_message_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO chats (jid, kind, name, unread_count, archived, pinned, mute_end_ms, last_message_ms, ephemeral_seconds)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT (jid) DO UPDATE SET
-             name            = COALESCE(excluded.name, chats.name),
-             unread_count    = excluded.unread_count,
-             archived        = excluded.archived,
-             pinned          = excluded.pinned,
-             mute_end_ms     = excluded.mute_end_ms,
-             last_message_ms = max(chats.last_message_ms, excluded.last_message_ms)",
+             name              = COALESCE(excluded.name, chats.name),
+             unread_count      = excluded.unread_count,
+             archived          = excluded.archived,
+             pinned            = excluded.pinned,
+             mute_end_ms       = excluded.mute_end_ms,
+             last_message_ms   = max(chats.last_message_ms, excluded.last_message_ms),
+             ephemeral_seconds = excluded.ephemeral_seconds",
         params![
             jid,
             chat_kind(&jid),
@@ -651,7 +703,8 @@ fn put_chat_meta(tx: &Transaction<'_>, ch: &pb::ChatMeta) -> rusqlite::Result<()
             ch.archived,
             ch.pinned,
             ch.mute_end_ms,
-            ch.last_message_ms
+            ch.last_message_ms,
+            ch.ephemeral_seconds
         ],
     )?;
     Ok(())
@@ -808,6 +861,27 @@ mod tests {
 
     const LID: &str = "111@lid";
     const PN: &str = "33600000000@s.whatsapp.net";
+
+    #[test]
+    fn live_messages_track_the_ephemeral_setting() {
+        use prost::Message as _;
+        let mut c = db();
+        let ephemeral = |id: &str, secs: u32, ts: i64| {
+            let mut m = crate::compose::text("x", None, vec![]);
+            crate::compose::expire(&mut m, secs);
+            let Op::Message(mut mi) = text(PN, id, PN, "x", ts) else {
+                unreachable!()
+            };
+            mi.raw = m.encode_to_vec();
+            Op::Message(mi)
+        };
+        let secs = |c: &Connection| one::<i64>(c, "SELECT ephemeral_seconds FROM chats");
+        apply(&mut c, ephemeral("A", 604_800, 1), 0).expect("A");
+        assert_eq!(secs(&c), 604_800);
+        // Texte simple : réglage désactivé.
+        apply(&mut c, ephemeral("B", 0, 2), 0).expect("B");
+        assert_eq!(secs(&c), 0);
+    }
 
     #[test]
     fn redelivery_is_idempotent_and_fts_finds_accents() {

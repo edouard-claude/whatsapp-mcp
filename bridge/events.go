@@ -232,6 +232,8 @@ func chatMeta(conv *waHistorySync.Conversation) *pb.ChatMeta {
 		LastMessageMs: int64(ts) * 1000,
 		Pn:            conv.GetPnJID(),
 		Lid:           conv.GetLidJID(),
+		// Réglage actuel de la discussion, à reprendre dans chaque envoi.
+		EphemeralSeconds: conv.GetEphemeralExpiration(),
 	}
 }
 

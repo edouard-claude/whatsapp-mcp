@@ -1,0 +1,35 @@
+# Mises à jour hebdomadaires, regroupées par écosystème : une PR chacune.
+# whatsmeow est exclu ici : sa montée exige de recopier ses .proto, ce que fait
+# le workflow whatsmeow.yml.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /bridge
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: go.mau.fi/whatsmeow
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly

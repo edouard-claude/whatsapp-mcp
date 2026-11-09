@@ -148,7 +148,7 @@ async fn run(
                 (None, _) | (_, None) => {
                     // Plus aucune poignée : fermer stdin, le bridge se déconnecte et sort.
                     if let Some(mut w) = sink.take() {
-                        let _ = w.close().await;
+                        let _ = SinkExt::<Bytes>::close(&mut w).await;
                     }
                 }
             },

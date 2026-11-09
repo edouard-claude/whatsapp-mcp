@@ -444,6 +444,8 @@ message ChatMeta {
   int64 last_message_ms = 7;
   string pn = 8;
   string lid = 9;
+  // Durée des messages éphémères (secondes), 0 : désactivés.
+  uint32 ephemeral_seconds = 10;
 }
 
 message Reaction {

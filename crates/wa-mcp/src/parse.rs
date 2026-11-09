@@ -274,6 +274,43 @@ pub fn parse(msg: &WaMessage) -> Parsed {
     content(Kind::Other, None, None)
 }
 
+/// Durée éphémère du contexte d'un contenu déjà déballé : 0 si le contexte est
+/// absent ou muet, `None` si le type n'en porte pas.
+fn context_expiration(m: &WaMessage) -> Option<u32> {
+    let ci = [
+        m.extended_text_message.as_ref().map(|x| &x.context_info),
+        m.image_message.as_ref().map(|x| &x.context_info),
+        m.video_message.as_ref().map(|x| &x.context_info),
+        m.audio_message.as_ref().map(|x| &x.context_info),
+        m.document_message.as_ref().map(|x| &x.context_info),
+        m.sticker_message.as_ref().map(|x| &x.context_info),
+        m.location_message.as_ref().map(|x| &x.context_info),
+        m.contact_message.as_ref().map(|x| &x.context_info),
+        m.poll_creation_message.as_ref().map(|x| &x.context_info),
+        m.poll_creation_message_v2.as_ref().map(|x| &x.context_info),
+        m.poll_creation_message_v3.as_ref().map(|x| &x.context_info),
+    ]
+    .into_iter()
+    .flatten()
+    .next()?;
+    Some(ci.as_ref().and_then(|c| c.expiration).unwrap_or(0))
+}
+
+/// Durée des messages éphémères (secondes, 0 : désactivés) que révèle un message :
+/// avis de changement du réglage, ou contexte d'un contenu, que les clients
+/// renseignent à chaque envoi. `None` : le message n'en dit rien.
+pub fn expiration(msg: &WaMessage) -> Option<u32> {
+    let m = unwrap(msg);
+    if let Some(p) = m.protocol_message.as_deref() {
+        return (p.r#type == Some(protocol_message::Type::EphemeralSetting as i32))
+            .then(|| p.ephemeral_expiration.unwrap_or(0));
+    }
+    if m.conversation.is_some() {
+        return Some(0);
+    }
+    context_expiration(m)
+}
+
 /// Média téléchargeable porté par un message déjà déballé (voir [`unwrap`]).
 pub struct MediaRef {
     pub kind: Kind,

@@ -250,7 +250,15 @@ func (b *bridge) accountCommand(req *pb.AccountCommand) (*pb.Reply, error) {
 			return nil, err
 		}
 		out := &pb.StringList{}
-		for _, j := range bl.JIDs {
+		if bl == nil {
+			return &pb.Reply{Payload: &pb.Reply_Strings{Strings: out}}, nil
+		}
+		// Numéro de préférence, LID quand il est inconnu.
+		for _, it := range bl.Items {
+			j := it.PN
+			if j.IsEmpty() {
+				j = it.LID
+			}
 			out.Values = append(out.Values, jid(j))
 		}
 		return &pb.Reply{Payload: &pb.Reply_Strings{Strings: out}}, nil
@@ -321,19 +329,19 @@ func (b *bridge) accountCommand(req *pb.AccountCommand) (*pb.Reply, error) {
 	case *pb.AccountCommand_SetAbout:
 		return &pb.Reply{}, cli.SetStatusMessage(ctx, types.SetStatusInput{Text: proto.String(op.SetAbout)})
 	case *pb.AccountCommand_GetBlocklist:
-		return blocklist(cli.GetBlocklist(ctx))
+		return blocklist(cli.GetBlocklist(ctx, ""))
 	case *pb.AccountCommand_Block:
 		j, err := one(op.Block)
 		if err != nil {
 			return nil, err
 		}
-		return blocklist(cli.UpdateBlocklist(ctx, j, events.BlocklistChangeActionBlock))
+		return blocklist(cli.UpdateBlocklist(ctx, j, events.BlocklistChangeActionBlock, ""))
 	case *pb.AccountCommand_Unblock:
 		j, err := one(op.Unblock)
 		if err != nil {
 			return nil, err
 		}
-		return blocklist(cli.UpdateBlocklist(ctx, j, events.BlocklistChangeActionUnblock))
+		return blocklist(cli.UpdateBlocklist(ctx, j, events.BlocklistChangeActionUnblock, ""))
 	case *pb.AccountCommand_GetPrivacy:
 		p, err := cli.TryFetchPrivacySettings(ctx, true)
 		if err != nil {

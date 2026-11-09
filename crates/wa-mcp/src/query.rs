@@ -855,6 +855,19 @@ pub fn oldest_message(cx: &Ctx<'_>, chat: &str) -> Result<(i64, Option<MessageHe
     Ok((n, oldest))
 }
 
+/// Durée des messages éphémères d'une discussion (secondes, 0 : désactivés) :
+/// celle du groupe, sinon celle suivie pour la discussion.
+pub fn ephemeral_seconds(cx: &Ctx<'_>, chat: &str) -> Result<u32> {
+    Ok(cx.conn.query_row(
+        "SELECT COALESCE(
+                 (SELECT ephemeral_seconds FROM groups WHERE jid = ?1),
+                 (SELECT ephemeral_seconds FROM chats WHERE jid = ?1),
+                 0)",
+        [chat],
+        |r| r.get(0),
+    )?)
+}
+
 /// JID du compte lui-même, connu après la première connexion.
 pub fn own_jid(cx: &Ctx<'_>) -> Result<String> {
     cx.conn

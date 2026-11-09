@@ -54,6 +54,41 @@ pub fn text(body: &str, quoted: Option<Quoted>, mentions: Vec<String>) -> WaMess
     }
 }
 
+/// Fait disparaître un contenu au bout de `seconds`, comme le reste de la
+/// discussion : sans cette durée, WhatsApp garde le message et prévient le
+/// destinataire que l'expéditeur a « une ancienne version ». Sans effet sur les
+/// réactions, modifications et suppressions, qui suivent le message visé.
+pub fn expire(msg: &mut WaMessage, seconds: u32) {
+    if seconds == 0 {
+        return;
+    }
+    // Le texte simple n'a pas de contexte : il passe en texte étendu.
+    if let Some(body) = msg.conversation.take() {
+        msg.extended_text_message = Some(Box::new(ExtendedTextMessage {
+            text: Some(body),
+            ..Default::default()
+        }));
+    }
+    let ci = if let Some(x) = msg.extended_text_message.as_deref_mut() {
+        &mut x.context_info
+    } else if let Some(x) = msg.image_message.as_deref_mut() {
+        &mut x.context_info
+    } else if let Some(x) = msg.video_message.as_deref_mut() {
+        &mut x.context_info
+    } else if let Some(x) = msg.audio_message.as_deref_mut() {
+        &mut x.context_info
+    } else if let Some(x) = msg.document_message.as_deref_mut() {
+        &mut x.context_info
+    } else if let Some(x) = msg.location_message.as_deref_mut() {
+        &mut x.context_info
+    } else if let Some(x) = msg.poll_creation_message.as_deref_mut() {
+        &mut x.context_info
+    } else {
+        return;
+    };
+    ci.get_or_insert_default().expiration = Some(seconds);
+}
+
 /// Clé d'un message existant, comme `BuildMessageKey` : `participant` seulement
 /// pour un message d'un autre dans un groupe.
 pub fn key(chat: &str, id: &str, from_me: bool, sender: &str) -> MessageKey {
@@ -364,6 +399,27 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn expiring_messages_announce_their_duration() {
+        let mut m = text("salut", None, vec![]);
+        expire(&mut m, 86_400);
+        assert!(m.conversation.is_none());
+        assert_eq!(parse::expiration(&m), Some(86_400));
+        assert!(matches!(
+            parse::parse(&m),
+            Parsed::Content { kind: Kind::Text, text: Some(t), .. } if t == "salut"
+        ));
+
+        let mut plain = text("salut", None, vec![]);
+        expire(&mut plain, 0);
+        assert_eq!(plain.conversation.as_deref(), Some("salut"));
+        assert_eq!(parse::expiration(&plain), Some(0));
+
+        let mut r = reaction(key("1@s.whatsapp.net", "M", true, ""), "👍", 1);
+        expire(&mut r, 86_400);
+        assert_eq!(parse::expiration(&r), None);
     }
 
     #[test]

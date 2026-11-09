@@ -238,15 +238,24 @@ impl WaServer {
         &self,
         account: &AccountAlias,
         chat: &str,
-        msg: &WaMessage,
+        mut msg: WaMessage,
     ) -> Result<Json<Sent>, String> {
         self.limiter.check(account)?;
+        let target = chat.to_owned();
+        let seconds = self
+            .read(account, move |cx| query::ephemeral_seconds(cx, &target))
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "réglage éphémère inconnu, message permanent");
+                0
+            });
+        compose::expire(&mut msg, seconds);
         let sent = self
             .bridge
-            .send_message(account, chat, msg, None)
+            .send_message(account, chat, &msg, None)
             .await
             .map_err(|e| format!("envoi impossible : {e}"))?;
-        self.remember(account, chat, msg, &sent).await;
+        self.remember(account, chat, &msg, &sent).await;
         Ok(Json(Sent {
             chat_jid: chat.to_owned(),
             at: jiff::Timestamp::from_millisecond(sent.timestamp_ms)
@@ -360,7 +369,7 @@ impl WaServer {
         }
         let quoted = self.quoted(&account, &chat, p.reply_to).await?;
         let msg = compose::text(&p.text, quoted, mentions);
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
@@ -415,7 +424,7 @@ impl WaServer {
             seconds,
         };
         let msg = compose::media(media, up, quoted);
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
@@ -438,7 +447,7 @@ impl WaServer {
         }
         let chat = self.resolve(&account, p.chat).await?;
         let msg = compose::location(p.latitude, p.longitude, p.name, p.address);
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
@@ -469,7 +478,7 @@ impl WaServer {
         getrandom::fill(&mut secret).map_err(|e| format!("aléa indisponible : {e}"))?;
         let chat = self.resolve(&account, p.chat).await?;
         let msg = compose::poll(&p.question, &options, p.multiple, secret);
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
@@ -487,7 +496,7 @@ impl WaServer {
         let (chat, r) = self.target(&account, p.chat, p.message_id).await?;
         let key = compose::key(&chat, &r.id, r.from_me, &r.sender);
         let msg = compose::reaction(key, p.emoji.trim(), now_ms());
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
@@ -521,7 +530,7 @@ impl WaServer {
             );
         }
         let msg = compose::edit(&chat, &r.id, &p.text, now_ms());
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
@@ -551,7 +560,7 @@ impl WaServer {
         }
         let key = compose::key(&chat, &r.id, r.from_me, &r.sender);
         let msg = compose::revoke(key);
-        self.deliver(&account, &chat, &msg).await
+        self.deliver(&account, &chat, msg).await
     }
 
     #[tool(
