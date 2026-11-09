@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.3] - 2026-11-09
+
+### Fixed
+
+- Initial history could be lost when pairing a large account: the bridge's own
+  SQLite connections to `session.db` contended (`database is locked`), and messages
+  whose decryption failed this way were dropped. Transactions now take the write
+  lock at `BEGIN` (`_txlock=immediate`) and wait their turn instead of failing.
+
 ## [0.1.2] - 2026-11-09
 
 ### Fixed

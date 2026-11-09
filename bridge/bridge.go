@@ -180,8 +180,13 @@ func (b *bridge) openAccount(alias string) (*account, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	// _txlock=immediate : whatsmeow déchiffre dans une transaction qui lit puis
+	// écrit. Différée, elle ne peut pas monter en écriture si une autre connexion
+	// a écrit entre-temps : SQLITE_BUSY immédiat, sans attente, et le message est
+	// perdu (rafale de l'appairage sur un gros compte). Prise en écriture dès le
+	// BEGIN, elle attend son tour via busy_timeout.
 	dsn := "file:" + filepath.Join(dir, "session.db") +
-		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
