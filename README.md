@@ -126,6 +126,32 @@ claude mcp add whatsapp -- wa-mcp serve
 
 **Any stdio MCP client**: run `wa-mcp serve`. Add `--read-only` to expose read tools only.
 
+### Several hosts on the same account
+
+A WhatsApp account can only be held by one process (see the per-account lock below).
+To use it from several hosts at once (Claude Desktop and Cursor, two Claude Code
+terminals...), install the shared service once:
+
+```bash
+wa-mcp service install    # launchd on macOS, systemd --user on Linux
+wa-mcp doctor             # shows the service, its URL and the header for HTTP hosts
+```
+
+The service holds the bridge, the locks, the database and the send limit, and serves
+MCP over **Streamable HTTP** on `127.0.0.1` (port `47311`, `--port` to change it),
+one MCP session per host. Then restart your hosts:
+
+- **stdio hosts keep their configuration.** `wa-mcp serve` notices the service and
+  relays stdio to it; without the service it runs the session in-process, as before.
+- **HTTP hosts** connect directly with the URL and `Authorization: Bearer` header
+  printed by `wa-mcp doctor`, e.g.
+  `claude mcp add --transport http whatsapp http://127.0.0.1:47311/mcp --header "Authorization: Bearer <token>"`.
+  The second token printed is read-only: it only exposes read tools.
+
+`wa-mcp service status` tells whether it runs; `wa-mcp service uninstall` removes it
+(hosts go back to running the session in-process on their next start). Logs:
+`~/Library/Logs/wa-mcp/service.log` (macOS), `journalctl --user -u wa-mcp` (Linux).
+
 ## For AI agents: installation procedure
 
 If you are an agent asked to install this server, follow these steps in order and
@@ -151,7 +177,9 @@ check each result before moving on.
 Things to know:
 
 - **One instance per account.** A second `wa-mcp` on the same account refuses to start
-  (per-account lock). Stop `wa-mcp pair`/`run` before the host starts `serve`.
+  (per-account lock). Stop `wa-mcp pair`/`run` before the host starts `serve`. If the
+  user wants the account in several hosts, run `wa-mcp service install` and restart
+  the hosts: every `serve` then shares the service's session.
 - **Keep it running.** The WhatsApp session lives as long as `wa-mcp serve` runs; hosts
   that stop idle servers disconnect it. WhatsApp also unlinks devices when the phone
   itself stays offline for about 14 days.
@@ -208,15 +236,22 @@ Subscribe to `whatsapp://{account}/chat/{chat}/messages` to receive
 | `WA_DATA_DIR` / `--data-dir` | `~/Library/Application Support/wa-mcp` (macOS), `~/.local/share/wa-mcp` | sessions, databases, media |
 | `WA_BRIDGE` / `--bridge` | `wa-bridge` next to `wa-mcp` | bridge binary |
 | `WA_READ_ONLY` / `serve --read-only` | off | hide every tool that writes to WhatsApp |
+| `WA_SERVICE_PORT` / `service --port` | `47311` | port of `wa-mcp service`, on `127.0.0.1` only |
 | `RUST_LOG` | `info` | logs on stderr |
 
 Data layout: `accounts/<alias>/session.db` (whatsmeow keys), `store.db` (messages,
-contacts, groups), `media/` (downloaded files), `lock`.
+contacts, groups), `media/` (downloaded files), `lock`. With the service:
+`service/token`, `service/token-read-only` (`0600`; delete them and restart the
+service to rotate) and `service/port`.
 
 ## Security and privacy
 
 - Everything is local: the server talks to WhatsApp and to the MCP host over stdio,
-  nothing else. No network port is opened.
+  nothing else. No network port is opened, unless you install `wa-mcp service`: it
+  listens on `127.0.0.1` only, requires a random bearer token (two of them: full and
+  read-only, stored `0600` in the data directory), accepts only loopback `Host`
+  headers and rejects any request carrying an `Origin` (a web page), against DNS
+  rebinding.
 - An agent with read access to your messages, write access to WhatsApp and any
   other outbound channel is exposed to prompt injection
   ([the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)).

@@ -998,7 +998,7 @@ impl WaServer {
             .pair_with_code(&alias, &phone)
             .await
             .map_err(|e| format!("appairage impossible : {e}"))?;
-        self.locks.lock().push(lock);
+        self.locks.keep(lock);
         self.accounts.write().push(alias.clone());
         Ok(Json(Pairing {
             account: alias.to_string(),

@@ -66,6 +66,17 @@ pub struct BridgeHandle {
     tx: mpsc::Sender<Outgoing>,
 }
 
+#[cfg(test)]
+impl BridgeHandle {
+    /// Poignée sans bridge derrière : toute requête échoue (`Closed`). Pour les
+    /// tests qui n'exercent que la lecture des bases.
+    pub fn detached() -> BridgeHandle {
+        BridgeHandle {
+            tx: mpsc::channel(1).0,
+        }
+    }
+}
+
 pub struct Bridge {
     pub handle: BridgeHandle,
     pub events: mpsc::Receiver<BridgeEvent>,

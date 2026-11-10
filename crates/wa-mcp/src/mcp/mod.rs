@@ -8,6 +8,7 @@ mod tools;
 mod write;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use jiff::tz::TimeZone;
 use rmcp::handler::server::router::prompt::PromptRouter;
@@ -26,20 +27,70 @@ use crate::domain::AccountAlias;
 use crate::query::{self, QueryError, Reader};
 use crate::store::{Op, Store};
 
+pub use write::SendLimiter;
+
+/// État d'une instance de wa-mcp, commun à toutes ses sessions MCP : une
+/// session stdio en process, ou autant de sessions HTTP que d'hôtes branchés
+/// sur `wa-mcp service`. Chaque session a son propre `WaServer` (abonnements,
+/// lecture seule), construit par [`WaServer::new`] au-dessus de cet état.
+#[derive(Clone)]
+pub struct Instance {
+    data_dir: PathBuf,
+    bridge: BridgeHandle,
+    store: Store,
+    /// Comptes servis : ceux du démarrage, plus ceux appairés depuis MCP. Un
+    /// appairage fait dans une session est vu par toutes les autres.
+    // RwLock : lu à chaque appel d'outil, écrit seulement à l'appairage, jamais
+    // tenu pendant un `.await`.
+    accounts: Arc<parking_lot::RwLock<Vec<AccountAlias>>>,
+    /// Verrous des comptes appairés depuis MCP (ceux du démarrage sont tenus par `main`).
+    locks: crate::lock::Held,
+    /// La limite d'envoi vaut par compte, quel que soit l'hôte qui envoie.
+    limiter: Arc<SendLimiter>,
+    /// Changements de discussion diffusés par l'ingestion.
+    updates: tokio::sync::broadcast::Sender<crate::ingest::ChatUpdate>,
+}
+
+impl Instance {
+    pub fn new(
+        data_dir: PathBuf,
+        bridge: BridgeHandle,
+        store: Store,
+        accounts: Vec<AccountAlias>,
+        updates: tokio::sync::broadcast::Sender<crate::ingest::ChatUpdate>,
+    ) -> Instance {
+        Instance {
+            data_dir,
+            bridge,
+            store,
+            accounts: Arc::new(parking_lot::RwLock::new(accounts)),
+            locks: crate::lock::Held::default(),
+            limiter: Arc::default(),
+            updates,
+        }
+    }
+
+    /// Ouvre (et migre) la base de chaque compte, pour que les lectures trouvent
+    /// un schéma à jour même avant le premier message.
+    pub async fn open_databases(&self) -> anyhow::Result<()> {
+        let accounts = self.accounts.read().clone();
+        for a in accounts {
+            self.store.apply(a, Op::Open).await?;
+        }
+        Ok(())
+    }
+}
+
 pub struct WaServer {
     reader: Reader,
     bridge: BridgeHandle,
     store: Store,
     data_dir: PathBuf,
-    /// Comptes servis : ceux du démarrage, plus ceux appairés depuis MCP.
-    // RwLock : lu à chaque appel d'outil, écrit seulement à l'appairage, jamais
-    // tenu pendant un `.await`.
-    accounts: parking_lot::RwLock<Vec<AccountAlias>>,
-    /// Verrous des comptes appairés depuis MCP (ceux du démarrage sont tenus par `main`).
-    locks: parking_lot::Mutex<Vec<std::fs::File>>,
+    /// Partagés avec l'instance : voir [`Instance`].
+    accounts: Arc<parking_lot::RwLock<Vec<AccountAlias>>>,
+    locks: crate::lock::Held,
     tz: TimeZone,
-    limiter: write::SendLimiter,
-    /// Changements de discussion diffusés par l'ingestion.
+    limiter: Arc<SendLimiter>,
     updates: tokio::sync::broadcast::Sender<crate::ingest::ChatUpdate>,
     subs: live::SharedSubs,
     tool_router: ToolRouter<Self>,
@@ -47,29 +98,23 @@ pub struct WaServer {
 }
 
 impl WaServer {
-    /// `read_only` : les outils d'écriture ne sont pas exposés du tout.
-    pub fn new(
-        data_dir: PathBuf,
-        bridge: BridgeHandle,
-        store: Store,
-        accounts: Vec<AccountAlias>,
-        read_only: bool,
-        updates: tokio::sync::broadcast::Sender<crate::ingest::ChatUpdate>,
-    ) -> WaServer {
+    /// Serveur d'une session MCP. `read_only` : les outils d'écriture ne sont
+    /// pas exposés du tout.
+    pub fn new(instance: &Instance, read_only: bool) -> WaServer {
         let mut tools = Self::read_router() + Self::media_router() + Self::live_router();
         if !read_only {
             tools += Self::write_router() + Self::manage_router();
         }
         WaServer {
-            reader: Reader::new(data_dir.clone()),
-            bridge,
-            store,
-            data_dir,
-            accounts: parking_lot::RwLock::new(accounts),
-            locks: parking_lot::Mutex::new(Vec::new()),
+            reader: Reader::new(instance.data_dir.clone()),
+            bridge: instance.bridge.clone(),
+            store: instance.store.clone(),
+            data_dir: instance.data_dir.clone(),
+            accounts: instance.accounts.clone(),
+            locks: instance.locks.clone(),
             tz: TimeZone::system(),
-            limiter: write::SendLimiter::default(),
-            updates,
+            limiter: instance.limiter.clone(),
+            updates: instance.updates.clone(),
             subs: live::SharedSubs::default(),
             tool_router: tools,
             prompt_router: Self::prompt_router(),
@@ -146,14 +191,12 @@ impl WaServer {
         self.read(account, move |cx| query::resolve_chat(cx, &chat))
             .await
     }
+}
 
-    /// Ouvre (et migre) la base de chaque compte, pour que les lectures trouvent
-    /// un schéma à jour même avant le premier message.
-    pub async fn open_databases(&self) -> anyhow::Result<()> {
-        for a in self.accounts() {
-            self.store.apply(a, Op::Open).await?;
-        }
-        Ok(())
+/// Le serveur d'une session disparaît avec elle : ses tâches aussi.
+impl Drop for WaServer {
+    fn drop(&mut self) {
+        self.subs.lock().stop_notifier();
     }
 }
 
