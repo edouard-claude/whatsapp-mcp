@@ -18,12 +18,12 @@ bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"
 getrandom = "0.4.3"
-jiff = "0.2.37"
+jiff = "1.0.1"
 parking_lot = "0.12.5"
 prost = "0.14.4"
-qrcode = { version = "0.14.1", default-features = false }
+qrcode = { version = "0.15.0", default-features = false }
 rmcp = { version = "3.5.0", features = ["server", "macros", "transport-io", "schemars"] }
-rusqlite = { version = "0.41.1", features = ["bundled"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
